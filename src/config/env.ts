@@ -27,6 +27,12 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   BROWSER_TIMEOUT_MS: z.coerce.number().int().positive().default(60000),
 
+  // Proxy (opcional - para bypass de Cloudflare)
+  PROXY_HOST: z.string().optional(),
+  PROXY_PORT: z.coerce.number().int().positive().optional(),
+  PROXY_USER: z.string().optional(),
+  PROXY_PASS: z.string().optional(),
+
   // Logging
   LOG_LEVEL: z
     .enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace'])
