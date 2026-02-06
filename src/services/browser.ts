@@ -18,7 +18,6 @@ export async function launchBrowser(): Promise<Browser> {
 
   browser = await puppeteer.launch({
     headless: env.HEADLESS,
-    executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined,
     args: [
       '--no-sandbox',
       '--disable-setuid-sandbox',

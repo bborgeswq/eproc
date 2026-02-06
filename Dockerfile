@@ -4,11 +4,6 @@ FROM ghcr.io/puppeteer/puppeteer:24.2.0
 USER root
 WORKDIR /app
 
-# CRITICAL: Skip Puppeteer's Chrome download - use image's Chrome instead
-ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
-ENV PUPPETEER_SKIP_DOWNLOAD=true
-ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
-
 # Install pnpm via npm (avoids corepack signature issues)
 RUN npm install -g pnpm@10.28.2
 
