@@ -152,11 +152,24 @@ export async function login(page: Page): Promise<boolean> {
         logger.warn('Timeout aguardando inputs na página');
       });
 
-      // Log HTML para debug (primeiros 2000 chars)
+      // Log HTML completo para debug
       const pageHtml = await page.content();
-      logger.info('HTML da página (inputs): %s',
-        pageHtml.match(/<input[^>]*>/gi)?.slice(0, 5).join(' | ') || 'nenhum input encontrado'
-      );
+      const htmlPreview = pageHtml.substring(0, 3000).replace(/\s+/g, ' ');
+      logger.info('HTML da página (preview): %s', htmlPreview);
+
+      // Verificar se há iframes
+      const iframes = await page.$$('iframe');
+      logger.info('Iframes encontrados: %d', iframes.length);
+
+      // Se houver iframe, tentar entrar nele
+      if (iframes.length > 0) {
+        const frame = await iframes[0].contentFrame();
+        if (frame) {
+          logger.info('Entrando no iframe...');
+          const frameHtml = await frame.content();
+          logger.info('HTML do iframe (preview): %s', frameHtml.substring(0, 2000).replace(/\s+/g, ' '));
+        }
+      }
 
       // 2. Preencher usuário — tenta vários seletores
       const userFilled = await fillInput(
