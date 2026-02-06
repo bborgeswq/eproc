@@ -549,20 +549,61 @@ export async function baixarDocumento(
       });
     }
 
-    // Navegar diretamente para o documento
-    await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-    await randomDelay(1000, 2000);
+    // Interceptar a resposta HTTP para capturar os bytes brutos do documento.
+    // Isso funciona tanto para PDFs nativos quanto para páginas HTML.
+    let responseBuffer: Buffer | null = null;
+    let responseContentType = 'application/pdf';
 
-    // Capturar como PDF
-    const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
-    const buffer = Buffer.from(pdfData);
+    docPage.on('response', async (response) => {
+      if (response.url() === docUrl || response.url().startsWith(docUrl.split('?')[0])) {
+        try {
+          const ct = response.headers()['content-type'] || '';
+          if (ct.includes('pdf') || ct.includes('html') || ct.includes('octet-stream')) {
+            responseContentType = ct.split(';')[0].trim();
+            responseBuffer = Buffer.from(await response.buffer());
+          }
+        } catch {
+          // Resposta já consumida ou indisponível — ignorar
+        }
+      }
+    });
+
+    // Navegar para o documento
+    const response = await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+
+    // Tentar capturar do response direto (mais confiável)
+    if (!responseBuffer && response) {
+      try {
+        const ct = response.headers()['content-type'] || '';
+        responseContentType = ct.split(';')[0].trim() || 'application/pdf';
+        responseBuffer = Buffer.from(await response.buffer());
+      } catch {
+        // Response buffer indisponível
+      }
+    }
+
+    // Fallback: se o conteúdo é HTML, renderizar como PDF
+    if (!responseBuffer || responseContentType.includes('html')) {
+      try {
+        const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
+        responseBuffer = Buffer.from(pdfData);
+        responseContentType = 'application/pdf';
+      } catch {
+        // Se pdf() também falhar, usar o que temos do response
+      }
+    }
 
     // Fechar aba do documento
     await docPage.close();
     docPage = null;
 
-    logger.debug('Documento baixado: %s (%d bytes)', docNome, buffer.length);
-    return { buffer, contentType: 'application/pdf' };
+    if (!responseBuffer || responseBuffer.length === 0) {
+      logger.warn('Documento vazio ou não capturado: %s', docNome);
+      return null;
+    }
+
+    logger.debug('Documento baixado: %s (%d bytes, %s)', docNome, responseBuffer.length, responseContentType);
+    return { buffer: responseBuffer, contentType: responseContentType };
 
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));

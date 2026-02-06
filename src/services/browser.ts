@@ -33,8 +33,6 @@ export async function launchBrowser(): Promise<Browser> {
     '--disable-crash-reporter',
     '--disable-crashpad',
     '--no-first-run',
-    '--no-zygote',
-    '--single-process',
     '--window-size=1920,1080',
     '--lang=pt-BR',
   ];
