@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  eproc-scraper:
+    build: .
+    container_name: eproc-scraper
+    restart: unless-stopped
+    environment:
+      # EPROC credentials
+      - EPROC_USER=${EPROC_USER}
+      - EPROC_PASSWORD=${EPROC_PASSWORD}
+      - EPROC_TOTP_SECRET=${EPROC_TOTP_SECRET}
+      - ADVOGADO_USER_ID=${ADVOGADO_USER_ID}
+
+      # Supabase
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+
+      # Execution config
+      - SCRAPER_INTERVAL_MINUTES=${SCRAPER_INTERVAL_MINUTES:-15}
+      - MAX_PROCESSES_PER_CYCLE=${MAX_PROCESSES_PER_CYCLE:-3}
+
+      # Browser (always headless in Docker)
+      - HEADLESS=true
+      - BROWSER_TIMEOUT_MS=${BROWSER_TIMEOUT_MS:-60000}
+
+      # Logging
+      - LOG_LEVEL=${LOG_LEVEL:-info}
+      - DEBUG_MODE=false
+
+    # Memory limit (Puppeteer pode usar bastante)
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+        reservations:
+          memory: 512M
+
+    # Security
+    security_opt:
+      - no-new-privileges:true
+
+    # Logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

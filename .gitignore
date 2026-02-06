@@ -1,0 +1,16 @@
+node_modules/
+dist/
+.env
+.env.local
+*.log
+
+# Debug artifacts
+debug-output/
+debug-*.png
+
+# IDE
+.vscode/
+.idea/
+
+# Claude
+.claude/
