@@ -147,8 +147,18 @@ export async function login(page: Page): Promise<boolean> {
       const urlAfterNav = page.url();
       logger.info('Página carregada. URL: %s', urlAfterNav);
 
+      // Aguardar inputs carregarem
+      await page.waitForSelector('input', { timeout: 10000 }).catch(() => {
+        logger.warn('Timeout aguardando inputs na página');
+      });
 
-      // 2. Preencher usuário — Keycloak usa #username
+      // Log HTML para debug (primeiros 2000 chars)
+      const pageHtml = await page.content();
+      logger.info('HTML da página (inputs): %s',
+        pageHtml.match(/<input[^>]*>/gi)?.slice(0, 5).join(' | ') || 'nenhum input encontrado'
+      );
+
+      // 2. Preencher usuário — tenta vários seletores
       const userFilled = await fillInput(
         page,
         [
@@ -156,6 +166,11 @@ export async function login(page: Page): Promise<boolean> {
           'input[name="username"]',
           '#txtUsuario',
           'input[name="txtUsuario"]',
+          '#txtLogin',
+          'input[name="txtLogin"]',
+          '#login',
+          'input[name="login"]',
+          'input[type="text"]:not([name=""])',
         ],
         env.EPROC_USER,
         'Usuário'
