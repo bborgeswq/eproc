@@ -1,14 +1,13 @@
 # Use puppeteer's official recommended base image
 FROM ghcr.io/puppeteer/puppeteer:24.2.0
 
-# Run as root (needed for some Docker environments)
 USER root
-
 WORKDIR /app
 
-# Disable Chrome crash reporting via environment
-ENV CHROME_CRASHPAD_HANDLER_ENABLED=0
-ENV GOOGLE_CRASH_REPORTER_ENABLED=0
+# CRITICAL: Skip Puppeteer's Chrome download - use image's Chrome instead
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
+ENV PUPPETEER_SKIP_DOWNLOAD=true
+ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
 # Install pnpm
 RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
@@ -16,20 +15,13 @@ RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
 
-# Install ALL dependencies
+# Install dependencies (won't download Chrome due to env vars above)
 RUN pnpm install --frozen-lockfile
 
-# Copy source code
+# Copy source code and build
 COPY . .
-
-# Build TypeScript
 RUN pnpm build
 
-# Set environment
 ENV NODE_ENV=production
 
-# Create crashpad directory to prevent errors
-RUN mkdir -p /tmp/crashpad && chmod 777 /tmp/crashpad
-
-# Run the scraper (as root for compatibility)
 CMD ["node", "dist/index.js"]
