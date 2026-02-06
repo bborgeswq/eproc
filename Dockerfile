@@ -10,8 +10,11 @@ RUN npm install -g pnpm@10.28.2
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
 
-# Install dependencies (won't download Chrome due to env vars above)
+# Install dependencies
 RUN pnpm install --frozen-lockfile
+
+# Install Chrome explicitly (pnpm ignores postinstall scripts)
+RUN npx puppeteer browsers install chrome
 
 # Copy source code and build
 COPY . .
