@@ -9,8 +9,8 @@ ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 ENV PUPPETEER_SKIP_DOWNLOAD=true
 ENV PUPPETEER_EXECUTABLE_PATH=/usr/bin/google-chrome-stable
 
-# Install pnpm
-RUN corepack enable && corepack prepare pnpm@10.28.2 --activate
+# Install pnpm via npm (avoids corepack signature issues)
+RUN npm install -g pnpm@10.28.2
 
 # Copy package files
 COPY package.json pnpm-lock.yaml ./
