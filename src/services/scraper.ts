@@ -531,70 +531,48 @@ export async function baixarDocumento(
 ): Promise<{ buffer: Buffer; contentType: string } | null> {
   logger.debug('Baixando documento: %s', docNome);
 
+  let docPage: Page | null = null;
+
   try {
-    // Preparar para nova aba
-    const newTabPromise = waitForNewTab(browser, 30000);
+    // Abrir nova aba para download (NÃO tocar na página principal)
+    docPage = await browser.newPage();
 
-    // Navegar para o documento (pode abrir em nova aba ou na mesma)
-    const currentUrl = page.url();
+    // Copiar cookies da sessão autenticada
+    const cookies = await page.cookies();
+    await docPage.setCookie(...cookies);
 
-    // Clicar no link do documento
-    const clicked = await page.evaluate((url) => {
-      const links = Array.from(document.querySelectorAll('a'));
-      const docLink = links.find((a) => a.href === url || a.href.includes(url));
-      if (docLink) {
-        docLink.click();
-        return true;
-      }
-      return false;
-    }, docUrl);
-
-    if (!clicked) {
-      // Tentar navegação direta
-      logger.debug('Link não encontrado, tentando navegação direta');
+    // Autenticar proxy na nova aba (se configurado)
+    if (env.PROXY_USER && env.PROXY_PASS) {
+      await docPage.authenticate({
+        username: env.PROXY_USER,
+        password: env.PROXY_PASS,
+      });
     }
 
-    // Aguardar nova aba
-    let docPage: Page;
-    try {
-      docPage = await newTabPromise;
-    } catch {
-      // Não abriu nova aba, usar navegação direta
-      docPage = await browser.newPage();
-      await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
-    }
-
+    // Navegar diretamente para o documento
+    await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
     await randomDelay(1000, 2000);
 
-    // Verificar tipo de conteúdo
-    const contentType = await docPage.evaluate(() => {
-      return document.contentType || 'application/pdf';
-    });
-
-    let pdfData: Uint8Array;
-
-    if (contentType.includes('pdf') || docUrl.toLowerCase().includes('.pdf')) {
-      // Capturar como PDF
-      pdfData = await docPage.pdf({ format: 'A4' });
-    } else {
-      // Capturar como screenshot (para HTML ou outros)
-      pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
-    }
-
-    // Converter Uint8Array para Buffer
+    // Capturar como PDF
+    const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
     const buffer = Buffer.from(pdfData);
 
     // Fechar aba do documento
-    if (docPage !== page) {
-      await docPage.close();
-    }
+    await docPage.close();
+    docPage = null;
 
     logger.debug('Documento baixado: %s (%d bytes)', docNome, buffer.length);
-    return { buffer, contentType };
+    return { buffer, contentType: 'application/pdf' };
 
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
     logger.error({ err }, 'Erro ao baixar documento: %s', docNome);
+
+    // Fechar aba se ainda estiver aberta
+    if (docPage) {
+      await docPage.close().catch(() => {});
+    }
+
     return null;
   }
 }
