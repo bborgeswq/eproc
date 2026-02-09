@@ -3,10 +3,11 @@ import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { launchBrowser, newPage, closeBrowser } from './services/browser.js';
 import { login } from './services/auth.js';
-import { obterProcessosComPrazoAberto, extrairDetalhesProcessos } from './services/scraper.js';
+import { obterProcessosComPrazoAberto, extrairDetalhesProcessos, backfillLadoCliente } from './services/scraper.js';
 import {
   getAllProcessosAbertos,
   getProcessosComEventos,
+  getProcessosSemLadoCliente,
   syncProcessos,
   createScraperRun,
   updateScraperRun,
@@ -68,15 +69,33 @@ async function executarCiclo(): Promise<boolean> {
       processosComEventos
     );
 
-    todosProcessados = resultado.todosProcessados;
+    // 8. FASE 4: Backfill lado_cliente para processos que já têm eventos mas sem lado
+    const processosSemLado = await getProcessosSemLadoCliente();
+    let ladosBackfill = 0;
+    let todosLadosPreenchidos = true;
 
-    // 8. Fechar a aba da lista após Fase 2
-    if (listPage !== page) {
-      await listPage.close();
-      logger.debug('Aba de prazos fechada após Fase 2');
+    if (processosSemLado.length > 0) {
+      logger.info('=== Iniciando Fase 4: Backfill lado_cliente ===');
+      const backfill = await backfillLadoCliente(
+        listPage,
+        browser,
+        processosSemLado,
+        env.MAX_PROCESSES_PER_CYCLE
+      );
+      ladosBackfill = backfill.atualizados;
+      todosLadosPreenchidos = backfill.todosPreenchidos;
     }
 
-    // 9. Atualizar registro de execução
+    // Só entra em recesso quando eventos E lado_cliente estão completos
+    todosProcessados = resultado.todosProcessados && todosLadosPreenchidos;
+
+    // 9. Fechar a aba da lista após Fases 2+3+4
+    if (listPage !== page) {
+      await listPage.close();
+      logger.debug('Aba de prazos fechada');
+    }
+
+    // 10. Atualizar registro de execução
     await updateScraperRun(runId, {
       status: 'success',
       processos_encontrados: processosEproc.length,
@@ -86,12 +105,13 @@ async function executarCiclo(): Promise<boolean> {
 
     logger.info('=== Ciclo concluído com sucesso ===');
     logger.info(
-      'Resumo: %d encontrados, %d novos, %d removidos, %d eventos, %d lados, %d docs',
+      'Resumo: %d encontrados, %d novos, %d removidos, %d eventos, %d lados (fase2), %d lados (backfill), %d docs',
       processosEproc.length,
       inserted,
       deleted,
       resultado.totalEventos,
       resultado.ladosAtualizados,
+      ladosBackfill,
       resultado.totalDocumentos
     );
 

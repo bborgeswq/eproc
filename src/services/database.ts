@@ -278,6 +278,24 @@ export async function syncProcessos(
   return { inserted, deleted };
 }
 
+/**
+ * Retorna processos que têm lado_cliente = null (para backfill).
+ */
+export async function getProcessosSemLadoCliente(): Promise<ProcessoAberto[]> {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from('processos_abertos')
+    .select('*')
+    .is('lado_cliente', null);
+
+  if (error) {
+    logger.error('Erro ao buscar processos sem lado_cliente: %s', error.message);
+    return [];
+  }
+
+  return (data ?? []) as ProcessoAberto[];
+}
+
 // =============================================
 // EVENTOS_PROCESSO
 // =============================================

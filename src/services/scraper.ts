@@ -468,6 +468,94 @@ export async function extrairDetalhesProcessos(
 }
 
 // =============================================
+// FASE 4: BACKFILL LADO_CLIENTE
+// =============================================
+
+/**
+ * Preenche lado_cliente de um processo individual.
+ * Abre a página de detalhes, parseia "Partes e Representantes", atualiza DB.
+ * Não re-extrai eventos nem baixa documentos.
+ */
+export async function preencherLadoCliente(
+  page: Page,
+  browser: Browser,
+  processo: ProcessoAberto
+): Promise<boolean> {
+  const numeroCnj = processo.numero_cnj;
+
+  try {
+    const detailPage = await navegarParaDetalhesProcesso(page, browser, numeroCnj);
+    const detalhes = await parseDetalhesProcesso(detailPage);
+
+    let atualizado = false;
+
+    if (advogadoNaLista(detalhes.advogadosRequerente, env.ADVOGADO_NAME)) {
+      await updateLadoCliente(numeroCnj, 'requerente', processo.requerente_nome, processo.requerente_cpf);
+      atualizado = true;
+      logger.info('lado_cliente detectado para %s: requerente', numeroCnj);
+    } else if (advogadoNaLista(detalhes.advogadosRequerido, env.ADVOGADO_NAME)) {
+      await updateLadoCliente(numeroCnj, 'requerido', processo.requerido_nome, processo.requerido_cpf);
+      atualizado = true;
+      logger.info('lado_cliente detectado para %s: requerido', numeroCnj);
+    } else {
+      logger.warn('lado_cliente não detectado para %s (advogado não encontrado)', numeroCnj);
+    }
+
+    if (detailPage !== page) {
+      await detailPage.close();
+    }
+
+    return atualizado;
+  } catch (error) {
+    const err = error instanceof Error ? error : new Error(String(error));
+    logger.error({ err, numeroCnj }, 'Erro ao preencher lado_cliente');
+    return false;
+  }
+}
+
+/**
+ * Backfill: preenche lado_cliente para processos que já têm eventos mas sem lado.
+ * Processa até maxPorCiclo processos por ciclo.
+ */
+export async function backfillLadoCliente(
+  page: Page,
+  browser: Browser,
+  processosSemLado: ProcessoAberto[],
+  maxPorCiclo: number
+): Promise<{ atualizados: number; todosPreenchidos: boolean }> {
+  logger.info(
+    '=== Backfill lado_cliente: %d processos sem lado, processando até %d ===',
+    processosSemLado.length,
+    maxPorCiclo
+  );
+
+  const lote = processosSemLado.slice(0, maxPorCiclo);
+  let atualizados = 0;
+
+  for (let i = 0; i < lote.length; i++) {
+    const processo = lote[i];
+    logger.info('[%d/%d] Backfill lado_cliente: %s...', i + 1, lote.length, processo.numero_cnj);
+
+    const ok = await preencherLadoCliente(page, browser, processo);
+    if (ok) atualizados++;
+
+    await randomDelay(2000, 4000);
+  }
+
+  const restantes = processosSemLado.length - lote.length;
+  const todosPreenchidos = restantes === 0;
+
+  logger.info(
+    'Backfill concluído: %d atualizados de %d processados (%d restantes)',
+    atualizados,
+    lote.length,
+    restantes
+  );
+
+  return { atualizados, todosPreenchidos };
+}
+
+// =============================================
 // FASE 3: DOWNLOAD DE DOCUMENTOS
 // =============================================
 
