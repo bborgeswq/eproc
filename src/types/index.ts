@@ -99,8 +99,5 @@ export const SELECTORS = {
   },
 } as const;
 
-// Nome do advogado para identificar o lado cliente
-export const ADVOGADO_NOME = 'JAIME DARLAN MARTINS';
-
 // Cor de fundo que indica prazo ABERTO no EPROC (amarelo claro)
 export const COR_PRAZO_ABERTO = 'rgb(252, 252, 189)';

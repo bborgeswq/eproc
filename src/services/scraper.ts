@@ -8,7 +8,6 @@ import { saveFullPageHtml, analyzeProcessoCells } from '../utils/debug-html.js';
 import { syncEventosProcesso, updateLadoCliente, saveDocumento, documentoJaBaixado } from './database.js';
 import { uploadDocumento, gerarStoragePath, getSignedUrl } from './storage.js';
 import type { ProcessoAberto, EventoProcesso } from '../types/index.js';
-import { ADVOGADO_NOME } from '../types/index.js';
 
 /**
  * Aguarda uma nova aba ser aberta e retorna a Page dela.
@@ -349,7 +348,7 @@ export async function extrairDetalhesProcesso(
       const detalhes = await parseDetalhesProcesso(detailPage);
 
       // Verificar se o advogado está na lista de advogados do requerente
-      if (advogadoNaLista(detalhes.advogadosRequerente, ADVOGADO_NOME)) {
+      if (advogadoNaLista(detalhes.advogadosRequerente, env.ADVOGADO_NAME)) {
         await updateLadoCliente(
           numeroCnj,
           'requerente',
@@ -360,7 +359,7 @@ export async function extrairDetalhesProcesso(
         logger.info('lado_cliente detectado para %s: requerente', numeroCnj);
       }
       // Verificar se está na lista de advogados do requerido
-      else if (advogadoNaLista(detalhes.advogadosRequerido, ADVOGADO_NOME)) {
+      else if (advogadoNaLista(detalhes.advogadosRequerido, env.ADVOGADO_NAME)) {
         await updateLadoCliente(
           numeroCnj,
           'requerido',
@@ -482,20 +481,23 @@ export function identificarEventosComDocumentos(
 ): EventoProcesso[] {
   if (eventos.length === 0) return [];
 
-  // 1. Encontrar evento de prazo ABERTO (o mais recente, com maior número)
-  const eventoPrazoAberto = eventos
-    .filter((e) => e.is_prazo_aberto && e.evento_referenciado !== null)
-    .sort((a, b) => (b.evento_numero ?? 0) - (a.evento_numero ?? 0))[0];
+  // 1. Encontrar TODOS os eventos de prazo aberto e usar o menor evento_referenciado.
+  // Um processo pode ter múltiplas intimações (ex: eventos 108, 109, 110) para
+  // partes diferentes, todas referenciando o mesmo ou diferentes eventos base.
+  const prazosAbertos = eventos.filter(
+    (e) => e.is_prazo_aberto && e.evento_referenciado !== null
+  );
 
-  if (!eventoPrazoAberto) {
+  if (prazosAbertos.length === 0) {
     logger.debug('Nenhum evento de prazo aberto encontrado');
     return [];
   }
 
-  const eventoRef = eventoPrazoAberto.evento_referenciado!;
+  // Usar o menor evento_referenciado para não perder documentos
+  const eventoRef = Math.min(...prazosAbertos.map((e) => e.evento_referenciado!));
   logger.info(
-    'Prazo aberto: evento %d referencia evento %d',
-    eventoPrazoAberto.evento_numero ?? 0,
+    'Prazo aberto: %d intimações encontradas, menor evento referenciado: %d',
+    prazosAbertos.length,
     eventoRef
   );
 

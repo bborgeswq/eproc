@@ -11,6 +11,8 @@ const envSchema = z.object({
 
   // Advogado - para identificar eventos do advogado no EPROC
   ADVOGADO_USER_ID: z.string().min(1),
+  // Nome do advogado - para detectar lado_cliente na seção Partes e Representantes
+  ADVOGADO_NAME: z.string().min(1),
 
   // Supabase
   SUPABASE_URL: z.string().url(),

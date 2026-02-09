@@ -170,7 +170,8 @@ export async function parseEventosProcesso(page: Page, numeroCnj: string): Promi
 
 /**
  * Extrai informações detalhadas do processo incluindo advogados de cada parte.
- * Retorna objeto com informações para determinar lado_cliente.
+ * Parseia a tabela "Partes e Representantes" do EPROC que tem colunas
+ * (ex: EXEQUENTE | EXECUTADO) com advogados listados como "NOME  RS053253".
  */
 export async function parseDetalhesProcesso(page: Page): Promise<{
   advogadosRequerente: string[];
@@ -180,55 +181,103 @@ export async function parseDetalhesProcesso(page: Page): Promise<{
     const advogadosRequerente: string[] = [];
     const advogadosRequerido: string[] = [];
 
-    // Buscar por padrões no HTML
-    const html = document.body.innerHTML;
+    // Termos que indicam parte ativa (→ lado requerente)
+    const termosAtivo = ['AUTOR', 'REQUERENTE', 'EXEQUENTE', 'EMBARGANTE', 'SUSCITANTE', 'IMPETRANTE', 'RECLAMANTE'];
+    // Termos que indicam parte passiva (→ lado requerido)
+    const termosPassivo = ['REU', 'RÉU', 'REQUERIDO', 'EXECUTADO', 'EMBARGADO', 'SUSCITADO', 'IMPETRADO', 'RECLAMADO'];
 
-    // Padrão EPROC: <b>Autor</b> ... <b>Advogado</b> NOME
-    const regexAtivo = /<b>\s*(Autor|Requerente|Exequente|Embargante|Suscitante)\s*<\/b>[\s\S]*?<b>\s*Advogad[oa]\s*<\/b>\s*:?\s*([^<\n]+)/gi;
-    let match;
-    while ((match = regexAtivo.exec(html)) !== null) {
-      const advNome = match[2].trim();
-      if (advNome.length > 3) {
-        advogadosRequerente.push(advNome);
-      }
+    function classificarLado(texto: string): 'requerente' | 'requerido' | null {
+      const upper = texto.toUpperCase().trim();
+      if (termosAtivo.some(t => upper.includes(t))) return 'requerente';
+      if (termosPassivo.some(t => upper.includes(t))) return 'requerido';
+      return null;
     }
 
-    // Buscar seções de partes passivas (réu/requerido)
-    const regexPassivo = /<b>\s*(R[eé]u|Requerido|Executado|Embargado|Suscitado)\s*<\/b>[\s\S]*?<b>\s*Advogad[oa]\s*<\/b>\s*:?\s*([^<\n]+)/gi;
-    while ((match = regexPassivo.exec(html)) !== null) {
-      const advNome = match[2].trim();
-      if (advNome.length > 3) {
-        advogadosRequerido.push(advNome);
-      }
+    // Regex para detectar número OAB: sigla seccional (2 letras) + 5-6 dígitos
+    const oabRegex = /\b([A-Z]{2})\s*(\d{5,6})\b/;
+
+    function extrairNomeAdvogado(texto: string): string | null {
+      const match = texto.match(oabRegex);
+      if (!match) return null;
+      // Nome é tudo antes do código OAB, limpo
+      const nome = texto.substring(0, match.index).trim();
+      return nome.length > 3 ? nome : null;
     }
 
-    // Estratégia alternativa: buscar no texto com estrutura linha a linha
+    // ============================================================
+    // ESTRATÉGIA 1: Parsear tabela "Partes e Representantes"
+    // A tabela tem th com os tipos de parte (EXEQUENTE, EXECUTADO)
+    // e td com nomes de partes + advogados (NOME  RS053253)
+    // ============================================================
+    const tabelas = Array.from(document.querySelectorAll('table'));
+
+    for (const tabela of tabelas) {
+      const headers = Array.from(tabela.querySelectorAll('th'));
+      if (headers.length < 2) continue;
+
+      // Verificar se esta tabela tem headers de partes processuais
+      const headerLados = headers.map(h => classificarLado(h.textContent || ''));
+      const temPartesProcessuais = headerLados.some(l => l !== null);
+      if (!temPartesProcessuais) continue;
+
+      // Percorrer linhas da tabela
+      const linhas = Array.from(tabela.querySelectorAll('tbody tr, tr'));
+      for (const linha of linhas) {
+        const celulas = Array.from(linha.querySelectorAll('td'));
+
+        for (let colIdx = 0; colIdx < celulas.length; colIdx++) {
+          const lado = headerLados[colIdx];
+          if (!lado) continue;
+
+          // Extrair texto da célula e buscar padrões OAB
+          const celulaTexto = celulas[colIdx].textContent || '';
+          const linhasTexto = celulaTexto.split('\n');
+
+          for (const lt of linhasTexto) {
+            const trimmed = lt.trim();
+            if (!trimmed) continue;
+
+            const nomeAdv = extrairNomeAdvogado(trimmed);
+            if (nomeAdv) {
+              if (lado === 'requerente') {
+                advogadosRequerente.push(nomeAdv);
+              } else {
+                advogadosRequerido.push(nomeAdv);
+              }
+            }
+          }
+        }
+      }
+
+      // Se encontrou a tabela de partes, não precisa continuar
+      if (advogadosRequerente.length > 0 || advogadosRequerido.length > 0) break;
+    }
+
+    // ============================================================
+    // ESTRATÉGIA 2 (Fallback): Buscar no texto da página inteira
+    // Para processos com layout diferente
+    // ============================================================
     if (advogadosRequerente.length === 0 && advogadosRequerido.length === 0) {
       const texto = document.body.innerText;
       const linhas = texto.split('\n');
 
       let parteAtual: 'requerente' | 'requerido' | null = null;
 
-      for (let i = 0; i < linhas.length; i++) {
-        const linha = linhas[i].trim();
+      for (const linha of linhas) {
+        const trimmed = linha.trim();
+        if (!trimmed) continue;
 
-        // Detectar parte ativa
-        if (/^(Autor|Requerente|Exequente|Embargante|Suscitante)/i.test(linha)) {
-          parteAtual = 'requerente';
+        // Detectar mudança de seção
+        const lado = classificarLado(trimmed);
+        if (lado) {
+          parteAtual = lado;
+          continue;
         }
-        // Detectar parte passiva
-        else if (/^(R[eé]u|Requerido|Executado|Embargado|Suscitado)/i.test(linha)) {
-          parteAtual = 'requerido';
-        }
-        // Detectar advogado
-        else if (/^Advogad[oa]/i.test(linha) && parteAtual) {
-          // Nome pode estar na mesma linha ou na próxima
-          let nomeAdv = linha.replace(/^Advogad[oa]\s*:?\s*/i, '').trim();
-          if (nomeAdv.length < 3 && i + 1 < linhas.length) {
-            nomeAdv = linhas[i + 1].trim();
-          }
 
-          if (nomeAdv.length > 3) {
+        // Dentro de uma seção de parte, buscar advogados por OAB
+        if (parteAtual) {
+          const nomeAdv = extrairNomeAdvogado(trimmed);
+          if (nomeAdv) {
             if (parteAtual === 'requerente') {
               advogadosRequerente.push(nomeAdv);
             } else {
@@ -242,7 +291,6 @@ export async function parseDetalhesProcesso(page: Page): Promise<{
     return { advogadosRequerente, advogadosRequerido };
   });
 
-  // Log: mostrar advogados encontrados (usar logger.info para visibilidade)
   if (detalhes.advogadosRequerente.length > 0 || detalhes.advogadosRequerido.length > 0) {
     logger.info('Advogados encontrados: requerente=%j, requerido=%j',
       detalhes.advogadosRequerente,

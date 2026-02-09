@@ -2,7 +2,7 @@ import type { Page } from 'puppeteer';
 import { logger } from '../utils/logger.js';
 import { parseBrazilianDateTime } from '../utils/dates.js';
 import type { ProcessoAberto } from '../types/index.js';
-import { ADVOGADO_NOME } from '../types/index.js';
+import { env } from '../config/env.js';
 
 /**
  * Extrai prazo em dias de uma string.
@@ -190,7 +190,7 @@ export async function parseListaPrazos(page: Page): Promise<ProcessoAberto[]> {
     const requeridoNome = raw.parte_passiva_nome;
     const requeridoCpf = raw.parte_passiva_cpf;
 
-    const lado = determinarLadoCliente(requerenteNome, requeridoNome, ADVOGADO_NOME);
+    const lado = determinarLadoCliente(requerenteNome, requeridoNome, env.ADVOGADO_NAME);
 
     const processo: ProcessoAberto = {
       numero_cnj: raw.numero_cnj,
