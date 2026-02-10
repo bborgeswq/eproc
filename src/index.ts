@@ -7,7 +7,7 @@ import { obterProcessosComPrazoAberto, extrairDetalhesProcessos, backfillLadoCli
 import {
   getAllProcessosAbertos,
   getProcessosComEventos,
-  getProcessosSemLadoCliente,
+  getProcessosSemClienteNome,
   syncProcessos,
   createScraperRun,
   updateScraperRun,
@@ -69,8 +69,8 @@ async function executarCiclo(): Promise<boolean> {
       processosComEventos
     );
 
-    // 8. FASE 4: Backfill lado_cliente para processos que já têm eventos mas sem lado
-    const processosSemLado = await getProcessosSemLadoCliente();
+    // 8. FASE 4: Backfill lado_cliente para processos sem cliente_nome
+    const processosSemLado = await getProcessosSemClienteNome();
     let ladosBackfill = 0;
     let todosLadosPreenchidos = true;
 

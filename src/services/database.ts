@@ -103,9 +103,8 @@ export async function insertProcessosAbertos(processos: ProcessoAberto[]): Promi
         requerente_cpf: p.requerente_cpf,
         requerido_nome: p.requerido_nome,
         requerido_cpf: p.requerido_cpf,
-        lado_cliente: p.lado_cliente,
-        cliente_nome: p.cliente_nome,
-        cliente_cpf: p.cliente_cpf,
+        // lado_cliente, cliente_nome, cliente_cpf são gerenciados
+        // exclusivamente por updateLadoCliente() no backfill
         classe: p.classe,
         assunto: p.assunto,
         evento_prazo: p.evento_prazo,
@@ -281,15 +280,15 @@ export async function syncProcessos(
 /**
  * Retorna processos que têm lado_cliente = null (para backfill).
  */
-export async function getProcessosSemLadoCliente(): Promise<ProcessoAberto[]> {
+export async function getProcessosSemClienteNome(): Promise<ProcessoAberto[]> {
   const db = getSupabase();
   const { data, error } = await db
     .from('processos_abertos')
     .select('*')
-    .is('lado_cliente', null);
+    .is('cliente_nome', null);
 
   if (error) {
-    logger.error('Erro ao buscar processos sem lado_cliente: %s', error.message);
+    logger.error('Erro ao buscar processos sem cliente_nome: %s', error.message);
     return [];
   }
 
