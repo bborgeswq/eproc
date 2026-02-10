@@ -390,7 +390,7 @@ export async function syncEventosProcesso(
  */
 export async function updateLadoCliente(
   numero_cnj: string,
-  lado_cliente: 'requerente' | 'requerido',
+  lado_cliente: 'requerente' | 'requerido' | 'nao_identificado',
   cliente_nome: string,
   cliente_cpf: string
 ): Promise<void> {

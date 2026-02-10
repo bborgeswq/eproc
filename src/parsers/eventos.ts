@@ -199,8 +199,11 @@ export async function parseDetalhesProcesso(page: Page): Promise<{
     function extrairNomeAdvogado(texto: string): string | null {
       const match = texto.match(oabRegex);
       if (!match) return null;
-      // Nome é tudo antes do código OAB, limpo
-      const nome = texto.substring(0, match.index).trim();
+      const rawNome = texto.substring(0, match.index).trim();
+      if (rawNome.length <= 3) return null;
+      // Limpar prefixos como ") - Pessoa Jurídica" separados por 2+ espaços
+      const partes = rawNome.split(/\s{2,}/);
+      const nome = partes[partes.length - 1].trim();
       return nome.length > 3 ? nome : null;
     }
 

@@ -331,6 +331,10 @@ export async function extrairDetalhesProcesso(
       ? todosEventos.filter(e => (e.evento_numero ?? 0) >= eventoBase)
       : todosEventos;
 
+    if (todosEventos.length === 0) {
+      logger.warn('Nenhum evento encontrado para %s (URL: %s)', numeroCnj, detailPage.url());
+    }
+
     logger.info(
       'Eventos filtrados: %d de %d (base: evento %d)',
       eventosRelevantes.length,
@@ -498,7 +502,10 @@ export async function preencherLadoCliente(
       atualizado = true;
       logger.info('lado_cliente detectado para %s: requerido', numeroCnj);
     } else {
-      logger.warn('lado_cliente não detectado para %s (advogado não encontrado)', numeroCnj);
+      // Página carregou mas nenhum advogado encontrado — marcar para não retentar
+      await updateLadoCliente(numeroCnj, 'nao_identificado', processo.requerente_nome ?? '', processo.requerente_cpf ?? '');
+      logger.warn('lado_cliente marcado como nao_identificado para %s (advogado não encontrado)', numeroCnj);
+      atualizado = true;
     }
 
     if (detailPage !== page) {
