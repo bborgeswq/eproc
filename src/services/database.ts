@@ -484,6 +484,25 @@ export async function documentoJaBaixado(storagePath: string): Promise<boolean> 
 }
 
 /**
+ * Retorna lista de processos (numero_cnj) que têm documentos no storage.
+ * Usado para a fase de verificação/reparo de documentos corrompidos.
+ */
+export async function getProcessosComDocumentos(): Promise<string[]> {
+  const db = getSupabase();
+  const { data, error } = await db
+    .from('documentos_processo')
+    .select('numero_cnj');
+
+  if (error) {
+    logger.error('Erro ao buscar processos com documentos: %s', error.message);
+    return [];
+  }
+
+  // Retornar lista de numero_cnj únicos
+  return [...new Set(data?.map(d => d.numero_cnj) ?? [])];
+}
+
+/**
  * Deleta referências de documentos de um processo (usado quando processo é removido).
  * Os arquivos no storage são deletados via CASCADE ou manualmente.
  */

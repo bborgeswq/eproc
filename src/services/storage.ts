@@ -101,6 +101,29 @@ export function getPublicUrl(storagePath: string): string {
 }
 
 /**
+ * Baixa um documento do Storage e retorna como Buffer.
+ * Usado para verificação de integridade (magic bytes).
+ */
+export async function downloadDocumento(storagePath: string): Promise<Buffer | null> {
+  const supabase = getSupabase();
+
+  const { data, error } = await supabase.storage
+    .from(BUCKET_NAME)
+    .download(storagePath);
+
+  if (error) {
+    logger.error('Erro ao baixar documento do storage: %s', error.message);
+    return null;
+  }
+
+  if (!data) return null;
+
+  // Blob → Buffer
+  const arrayBuffer = await data.arrayBuffer();
+  return Buffer.from(arrayBuffer);
+}
+
+/**
  * Deleta um documento do storage.
  */
 export async function deleteDocumento(storagePath: string): Promise<boolean> {

@@ -3,11 +3,12 @@ import { env } from './config/env.js';
 import { logger } from './utils/logger.js';
 import { launchBrowser, newPage, closeBrowser } from './services/browser.js';
 import { login } from './services/auth.js';
-import { obterProcessosComPrazoAberto, extrairDetalhesProcessos, backfillLadoCliente } from './services/scraper.js';
+import { obterProcessosComPrazoAberto, extrairDetalhesProcessos, backfillLadoCliente, repararDocumentosProcesso } from './services/scraper.js';
 import {
   getAllProcessosAbertos,
   getProcessosComEventos,
   getProcessosSemClienteNome,
+  getProcessosComDocumentos,
   syncProcessos,
   createScraperRun,
   updateScraperRun,
@@ -86,16 +87,37 @@ async function executarCiclo(): Promise<boolean> {
       todosLadosPreenchidos = backfill.todosPreenchidos;
     }
 
+    // 9. FASE 5: Verificação e reparo de documentos corrompidos
+    const processosComDocs = await getProcessosComDocumentos();
+    let docsReparados = 0;
+
+    if (processosComDocs.length > 0) {
+      logger.info('=== Iniciando Fase 5: Verificação de documentos (%d processos) ===', processosComDocs.length);
+      const lote = processosComDocs.slice(0, env.MAX_PROCESSES_PER_CYCLE);
+
+      for (const cnj of lote) {
+        const reparo = await repararDocumentosProcesso(listPage, browser, cnj);
+        docsReparados += reparo.reparados;
+
+        if (reparo.corrompidos > 0) {
+          logger.info(
+            'Processo %s: %d verificados, %d corrompidos, %d reparados',
+            cnj, reparo.verificados, reparo.corrompidos, reparo.reparados
+          );
+        }
+      }
+    }
+
     // Só entra em recesso quando eventos E lado_cliente estão completos
     todosProcessados = resultado.todosProcessados && todosLadosPreenchidos;
 
-    // 9. Fechar a aba da lista após Fases 2+3+4
+    // 10. Fechar a aba da lista após Fases 2+3+4+5
     if (listPage !== page) {
       await listPage.close();
       logger.debug('Aba de prazos fechada');
     }
 
-    // 10. Atualizar registro de execução
+    // 11. Atualizar registro de execução
     await updateScraperRun(runId, {
       status: 'success',
       processos_encontrados: processosEproc.length,
@@ -105,14 +127,15 @@ async function executarCiclo(): Promise<boolean> {
 
     logger.info('=== Ciclo concluído com sucesso ===');
     logger.info(
-      'Resumo: %d encontrados, %d novos, %d removidos, %d eventos, %d lados (fase2), %d lados (backfill), %d docs',
+      'Resumo: %d encontrados, %d novos, %d removidos, %d eventos, %d lados (fase2), %d lados (backfill), %d docs, %d docs reparados',
       processosEproc.length,
       inserted,
       deleted,
       resultado.totalEventos,
       resultado.ladosAtualizados,
       ladosBackfill,
-      resultado.totalDocumentos
+      resultado.totalDocumentos,
+      docsReparados
     );
 
   } catch (error) {

@@ -5,8 +5,8 @@ import { randomDelay } from '../utils/dates.js';
 import { parseListaPrazos, debugTabelaEstrutura } from '../parsers/prazo-list.js';
 import { parseEventosProcesso, parseDetalhesProcesso } from '../parsers/eventos.js';
 import { saveFullPageHtml, analyzeProcessoCells } from '../utils/debug-html.js';
-import { syncEventosProcesso, updateLadoCliente, saveDocumento, documentoJaBaixado } from './database.js';
-import { uploadDocumento, gerarStoragePath, getSignedUrl } from './storage.js';
+import { syncEventosProcesso, updateLadoCliente, saveDocumento, documentoJaBaixado, getDocumentosByProcesso, getEventosByProcesso } from './database.js';
+import { uploadDocumento, gerarStoragePath, getSignedUrl, downloadDocumento } from './storage.js';
 import type { ProcessoAberto, EventoProcesso } from '../types/index.js';
 
 /**
@@ -617,7 +617,14 @@ export function identificarEventosComDocumentos(
 }
 
 /**
- * Baixa um documento clicando no link e capturando o PDF.
+ * Verifica se um buffer contém um PDF válido (magic bytes %PDF-).
+ */
+function isPdfBuffer(buffer: Buffer): boolean {
+  return buffer.length > 4 && buffer.subarray(0, 5).toString('ascii') === '%PDF-';
+}
+
+/**
+ * Baixa um documento via interceptação de resposta HTTP.
  * Retorna o buffer do arquivo ou null em caso de erro.
  */
 export async function baixarDocumento(
@@ -647,28 +654,30 @@ export async function baixarDocumento(
     }
 
     // Interceptar a resposta HTTP para capturar os bytes brutos do documento.
-    // Isso funciona tanto para PDFs nativos quanto para páginas HTML.
     let responseBuffer: Buffer | null = null;
     let responseContentType = 'application/pdf';
 
     docPage.on('response', async (response) => {
-      if (response.url() === docUrl || response.url().startsWith(docUrl.split('?')[0])) {
-        try {
-          const ct = response.headers()['content-type'] || '';
-          if (ct.includes('pdf') || ct.includes('html') || ct.includes('octet-stream')) {
-            responseContentType = ct.split(';')[0].trim();
-            responseBuffer = Buffer.from(await response.buffer());
-          }
-        } catch {
-          // Resposta já consumida ou indisponível — ignorar
+      // Match exato da URL (ignorando fragmento #)
+      const responseUrl = response.url().split('#')[0];
+      const targetUrl = docUrl.split('#')[0];
+      if (responseUrl !== targetUrl) return;
+
+      try {
+        const ct = response.headers()['content-type'] || '';
+        if (ct.includes('pdf') || ct.includes('octet-stream')) {
+          responseContentType = ct.split(';')[0].trim();
+          responseBuffer = Buffer.from(await response.buffer());
         }
+      } catch {
+        // Resposta já consumida ou indisponível — ignorar
       }
     });
 
     // Navegar para o documento
     const response = await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    // Tentar capturar do response direto (mais confiável)
+    // Fallback: capturar do response direto se interceptação não pegou
     if (!responseBuffer && response) {
       try {
         const ct = response.headers()['content-type'] || '';
@@ -679,14 +688,18 @@ export async function baixarDocumento(
       }
     }
 
-    // Fallback: se o conteúdo é HTML, renderizar como PDF
-    if (!responseBuffer || responseContentType.includes('html')) {
+    // Se já temos um PDF válido (magic bytes %PDF-), usar diretamente
+    if (responseBuffer && isPdfBuffer(responseBuffer)) {
+      logger.debug('PDF válido capturado via response: %s (%d bytes)', docNome, responseBuffer.length);
+    } else if (!responseBuffer || responseContentType.includes('html')) {
+      // Não temos buffer ou é HTML — renderizar página como PDF (último recurso)
+      logger.debug('Conteúdo HTML detectado para %s, renderizando como PDF', docNome);
       try {
         const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
         responseBuffer = Buffer.from(pdfData);
         responseContentType = 'application/pdf';
       } catch {
-        // Se pdf() também falhar, usar o que temos do response
+        // Se pdf() falhar, usar o que temos do response
       }
     }
 
@@ -697,6 +710,16 @@ export async function baixarDocumento(
     if (!responseBuffer || responseBuffer.length === 0) {
       logger.warn('Documento vazio ou não capturado: %s', docNome);
       return null;
+    }
+
+    // Validação final
+    if (!isPdfBuffer(responseBuffer)) {
+      logger.warn(
+        'Documento %s não é PDF válido (primeiros bytes: %s, %d bytes total)',
+        docNome,
+        responseBuffer.subarray(0, 10).toString('ascii').replace(/[^\x20-\x7E]/g, '?'),
+        responseBuffer.length
+      );
     }
 
     logger.debug('Documento baixado: %s (%d bytes, %s)', docNome, responseBuffer.length, responseContentType);
@@ -824,4 +847,82 @@ export async function processarDocumentosProcesso(
   }
 
   return documentosBaixados;
+}
+
+/**
+ * Verifica e repara documentos corrompidos de um processo.
+ * Baixa cada documento do Storage, verifica magic bytes %PDF-,
+ * e re-baixa do EPROC se estiver corrompido.
+ */
+export async function repararDocumentosProcesso(
+  page: Page,
+  browser: Browser,
+  numeroCnj: string
+): Promise<{ verificados: number; corrompidos: number; reparados: number }> {
+  const docs = await getDocumentosByProcesso(numeroCnj);
+  const eventos = await getEventosByProcesso(numeroCnj);
+
+  let verificados = 0;
+  let corrompidos = 0;
+  let reparados = 0;
+
+  for (const doc of docs) {
+    verificados++;
+
+    // Baixar do Storage para verificar integridade
+    const buffer = await downloadDocumento(doc.storage_path);
+    if (!buffer) {
+      logger.warn('Documento não encontrado no Storage: %s', doc.storage_path);
+      corrompidos++;
+      continue;
+    }
+
+    if (isPdfBuffer(buffer)) {
+      logger.debug('Documento OK: %s (%d bytes)', doc.storage_path, buffer.length);
+      continue;
+    }
+
+    // Documento corrompido — tentar re-baixar do EPROC
+    corrompidos++;
+    logger.warn(
+      'Documento corrompido: %s (primeiros bytes: %s)',
+      doc.storage_path,
+      buffer.subarray(0, 10).toString('ascii').replace(/[^\x20-\x7E]/g, '?')
+    );
+
+    // Encontrar URL original no evento correspondente
+    const evento = eventos.find(e => e.evento_numero === doc.evento_numero);
+    const docAnexo = evento?.documentos?.find(d => d.nome === doc.nome_original);
+
+    if (!docAnexo?.url) {
+      logger.warn('URL original não encontrada para re-download: %s', doc.nome_original);
+      continue;
+    }
+
+    // Re-baixar do EPROC
+    const resultado = await baixarDocumento(page, browser, docAnexo.url, doc.nome_original);
+    if (!resultado) {
+      logger.warn('Falha no re-download: %s', doc.nome_original);
+      continue;
+    }
+
+    if (!isPdfBuffer(resultado.buffer)) {
+      logger.warn('Re-download ainda não é PDF válido: %s', doc.nome_original);
+      continue;
+    }
+
+    // Re-upload para Storage
+    const { error } = await uploadDocumento(resultado.buffer, doc.storage_path, resultado.contentType);
+    if (error) {
+      logger.error('Erro no re-upload: %s', error);
+      continue;
+    }
+
+    reparados++;
+    logger.info('Documento reparado: %s (%d bytes)', doc.storage_path, resultado.buffer.length);
+
+    await randomDelay(1000, 2000);
+  }
+
+  return { verificados, corrompidos, reparados };
 }
