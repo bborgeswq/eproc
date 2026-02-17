@@ -653,77 +653,89 @@ export async function baixarDocumento(
       });
     }
 
-    // Interceptar a resposta HTTP para capturar os bytes brutos do documento.
+    // Interceptar TODAS as respostas PDF/octet-stream (independente da URL).
+    // O EPROC serve documentos via HTML viewer — o PDF real vem como sub-request.
     let responseBuffer: Buffer | null = null;
     let responseContentType = 'application/pdf';
 
     docPage.on('response', async (response) => {
-      // Match exato da URL (ignorando fragmento #)
-      const responseUrl = response.url().split('#')[0];
-      const targetUrl = docUrl.split('#')[0];
-      if (responseUrl !== targetUrl) return;
-
       try {
         const ct = response.headers()['content-type'] || '';
+        const status = response.status();
+        const url = response.url();
+
+        // Log DEBUG: todas as respostas para diagnóstico
+        if (status >= 200 && status < 300 && !url.includes('.css') && !url.includes('.js') && !url.includes('.png') && !url.includes('.gif') && !url.includes('.ico')) {
+          logger.info(
+            '[DOC-DEBUG] Response: status=%d, ct=%s, url=%s',
+            status, ct.substring(0, 60), url.substring(0, 120)
+          );
+        }
+
+        // Ignorar respostas de erro
+        if (status < 200 || status >= 300) return;
+
+        // Capturar qualquer resposta PDF ou octet-stream (sub-requests do viewer)
         if (ct.includes('pdf') || ct.includes('octet-stream')) {
-          responseContentType = ct.split(';')[0].trim();
-          responseBuffer = Buffer.from(await response.buffer());
+          const buf = Buffer.from(await response.buffer());
+
+          // Manter o maior buffer PDF (o documento real será o maior)
+          if (!responseBuffer || buf.length > responseBuffer.length) {
+            responseBuffer = buf;
+            responseContentType = ct.split(';')[0].trim();
+            logger.info(
+              '[DOC-DEBUG] PDF capturado: %s (%d bytes, URL: %s)',
+              docNome, buf.length, url.substring(0, 120)
+            );
+          }
         }
       } catch {
         // Resposta já consumida ou indisponível — ignorar
       }
     });
 
-    // Navegar para o documento
-    const response = await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
+    // Navegar para o documento — networkidle0 espera TODAS as conexões finalizarem
+    logger.info('[DOC-DEBUG] Navegando para: %s', docUrl);
+    await docPage.goto(docUrl, { waitUntil: 'networkidle0', timeout: 60000 });
 
-    // Fallback: capturar do response direto se interceptação não pegou
-    if (!responseBuffer && response) {
-      try {
-        const ct = response.headers()['content-type'] || '';
-        responseContentType = ct.split(';')[0].trim() || 'application/pdf';
-        responseBuffer = Buffer.from(await response.buffer());
-      } catch {
-        // Response buffer indisponível
-      }
+    // Espera extra para sub-requests do viewer carregarem o PDF
+    await new Promise(resolve => setTimeout(resolve, 3000));
+
+    // Log DEBUG: verificar conteúdo da página (iframes, embeds, objects)
+    const pageDebug = await docPage.evaluate(() => {
+      const iframes = Array.from(document.querySelectorAll('iframe')).map(f => f.src);
+      const embeds = Array.from(document.querySelectorAll('embed')).map(e => e.src);
+      const objects = Array.from(document.querySelectorAll('object')).map(o => o.getAttribute('data') || '');
+      const downloadLinks = Array.from(document.querySelectorAll('a[download], a[href*="download"]')).map(a => (a as HTMLAnchorElement).href);
+      return { iframes, embeds, objects, downloadLinks, title: document.title };
+    });
+    logger.info({ pageDebug }, '[DOC-DEBUG] Elementos da página do documento %s', docNome);
+
+    // Cast necessário: TS não rastreia mutações em callbacks async
+    const capturedPdf = responseBuffer as Buffer | null;
+
+    if (capturedPdf && isPdfBuffer(capturedPdf)) {
+      // PDF real capturado via sub-request do viewer
+      logger.info('PDF real baixado: %s (%d bytes)', docNome, capturedPdf.length);
+      await docPage.close();
+      docPage = null;
+      return { buffer: capturedPdf, contentType: responseContentType };
     }
 
-    // Se já temos um PDF válido (magic bytes %PDF-), usar diretamente
-    if (responseBuffer && isPdfBuffer(responseBuffer)) {
-      logger.debug('PDF válido capturado via response: %s (%d bytes)', docNome, responseBuffer.length);
-    } else if (!responseBuffer || responseContentType.includes('html')) {
-      // Não temos buffer ou é HTML — renderizar página como PDF (último recurso)
-      logger.debug('Conteúdo HTML detectado para %s, renderizando como PDF', docNome);
-      try {
-        const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
-        responseBuffer = Buffer.from(pdfData);
-        responseContentType = 'application/pdf';
-      } catch {
-        // Se pdf() falhar, usar o que temos do response
-      }
-    }
-
-    // Fechar aba do documento
+    // Nenhum PDF capturado → documento é HTML simples → converter para PDF
+    logger.debug('Nenhum PDF via response para %s, convertendo HTML para PDF', docNome);
+    const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
+    const htmlPdfBuffer = Buffer.from(pdfData);
     await docPage.close();
     docPage = null;
 
-    if (!responseBuffer || responseBuffer.length === 0) {
-      logger.warn('Documento vazio ou não capturado: %s', docNome);
+    if (htmlPdfBuffer.length === 0) {
+      logger.warn('Conversão HTML→PDF vazia para: %s', docNome);
       return null;
     }
 
-    // Validação final
-    if (!isPdfBuffer(responseBuffer)) {
-      logger.warn(
-        'Documento %s não é PDF válido (primeiros bytes: %s, %d bytes total)',
-        docNome,
-        responseBuffer.subarray(0, 10).toString('ascii').replace(/[^\x20-\x7E]/g, '?'),
-        responseBuffer.length
-      );
-    }
-
-    logger.debug('Documento baixado: %s (%d bytes, %s)', docNome, responseBuffer.length, responseContentType);
-    return { buffer: responseBuffer, contentType: responseContentType };
+    logger.info('HTML convertido para PDF: %s (%d bytes)', docNome, htmlPdfBuffer.length);
+    return { buffer: htmlPdfBuffer, contentType: 'application/pdf' };
 
   } catch (error) {
     const err = error instanceof Error ? error : new Error(String(error));
