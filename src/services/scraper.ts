@@ -653,77 +653,61 @@ export async function baixarDocumento(
       });
     }
 
-    // Interceptar TODAS as respostas PDF/octet-stream (independente da URL).
-    // O EPROC serve documentos via HTML viewer — o PDF real vem como sub-request.
-    let responseBuffer: Buffer | null = null;
-    let responseContentType = 'application/pdf';
+    // Estratégia: navegar para a URL do documento e detectar se é:
+    // 1. Viewer de PDF (página HTML com iframe apontando para o PDF real)
+    // 2. HTML simples (texto de despacho/aviso)
+    await docPage.goto(docUrl, { waitUntil: 'networkidle2', timeout: 60000 });
 
-    docPage.on('response', async (response) => {
-      try {
-        const ct = response.headers()['content-type'] || '';
-        const status = response.status();
-        const url = response.url();
-
-        // Log DEBUG: todas as respostas para diagnóstico
-        if (status >= 200 && status < 300 && !url.includes('.css') && !url.includes('.js') && !url.includes('.png') && !url.includes('.gif') && !url.includes('.ico')) {
-          logger.info(
-            '[DOC-DEBUG] Response: status=%d, ct=%s, url=%s',
-            status, ct.substring(0, 60), url.substring(0, 120)
-          );
-        }
-
-        // Ignorar respostas de erro
-        if (status < 200 || status >= 300) return;
-
-        // Capturar qualquer resposta PDF ou octet-stream (sub-requests do viewer)
-        if (ct.includes('pdf') || ct.includes('octet-stream')) {
-          const buf = Buffer.from(await response.buffer());
-
-          // Manter o maior buffer PDF (o documento real será o maior)
-          if (!responseBuffer || buf.length > responseBuffer.length) {
-            responseBuffer = buf;
-            responseContentType = ct.split(';')[0].trim();
-            logger.info(
-              '[DOC-DEBUG] PDF capturado: %s (%d bytes, URL: %s)',
-              docNome, buf.length, url.substring(0, 120)
-            );
-          }
-        }
-      } catch {
-        // Resposta já consumida ou indisponível — ignorar
-      }
+    // Verificar se a página tem iframe (= viewer de PDF)
+    const iframeSrc = await docPage.evaluate(() => {
+      const iframe = document.querySelector('iframe');
+      return iframe ? iframe.src : null;
     });
 
-    // Navegar para o documento — networkidle0 espera TODAS as conexões finalizarem
-    logger.info('[DOC-DEBUG] Navegando para: %s', docUrl);
-    await docPage.goto(docUrl, { waitUntil: 'networkidle0', timeout: 60000 });
-
-    // Espera extra para sub-requests do viewer carregarem o PDF
-    await new Promise(resolve => setTimeout(resolve, 3000));
-
-    // Log DEBUG: verificar conteúdo da página (iframes, embeds, objects)
-    const pageDebug = await docPage.evaluate(() => {
-      const iframes = Array.from(document.querySelectorAll('iframe')).map(f => f.src);
-      const embeds = Array.from(document.querySelectorAll('embed')).map(e => e.src);
-      const objects = Array.from(document.querySelectorAll('object')).map(o => o.getAttribute('data') || '');
-      const downloadLinks = Array.from(document.querySelectorAll('a[download], a[href*="download"]')).map(a => (a as HTMLAnchorElement).href);
-      return { iframes, embeds, objects, downloadLinks, title: document.title };
-    });
-    logger.info({ pageDebug }, '[DOC-DEBUG] Elementos da página do documento %s', docNome);
-
-    // Cast necessário: TS não rastreia mutações em callbacks async
-    const capturedPdf = responseBuffer as Buffer | null;
-
-    if (capturedPdf && isPdfBuffer(capturedPdf)) {
-      // PDF real capturado via sub-request do viewer
-      logger.info('PDF real baixado: %s (%d bytes)', docNome, capturedPdf.length);
+    if (iframeSrc) {
+      // É um viewer de PDF — navegar diretamente para a URL do iframe
+      // para obter o PDF bruto, sem interferência do Chrome PDF viewer
+      logger.debug('Viewer detectado para %s, baixando PDF do iframe: %s', docNome, iframeSrc.substring(0, 100));
       await docPage.close();
       docPage = null;
-      return { buffer: capturedPdf, contentType: responseContentType };
+
+      // Abrir nova aba limpa e baixar o PDF diretamente via response
+      const pdfPage = await browser.newPage();
+      const cookies = await page.cookies();
+      await pdfPage.setCookie(...cookies);
+
+      if (env.PROXY_USER && env.PROXY_PASS) {
+        await pdfPage.authenticate({
+          username: env.PROXY_USER,
+          password: env.PROXY_PASS,
+        });
+      }
+
+      // Navegar direto para a URL do iframe (serve o PDF bruto)
+      const pdfResponse = await pdfPage.goto(iframeSrc, { waitUntil: 'networkidle2', timeout: 60000 });
+      let pdfBuffer: Buffer | null = null;
+
+      if (pdfResponse) {
+        try {
+          pdfBuffer = Buffer.from(await pdfResponse.buffer());
+        } catch {
+          // Buffer indisponível
+        }
+      }
+
+      await pdfPage.close();
+
+      if (pdfBuffer && isPdfBuffer(pdfBuffer)) {
+        logger.info('PDF real baixado: %s (%d bytes)', docNome, pdfBuffer.length);
+        return { buffer: pdfBuffer, contentType: 'application/pdf' };
+      }
+
+      logger.warn('Falha ao baixar PDF do iframe para: %s (buffer: %d bytes)', docNome, pdfBuffer?.length ?? 0);
+      return null;
     }
 
-    // Nenhum PDF capturado → documento é HTML simples → converter para PDF
-    logger.debug('Nenhum PDF via response para %s, convertendo HTML para PDF', docNome);
+    // Sem iframe → HTML simples (despacho/aviso) → converter para PDF
+    logger.debug('HTML simples detectado para %s, convertendo para PDF', docNome);
     const pdfData = await docPage.pdf({ format: 'A4', printBackground: true });
     const htmlPdfBuffer = Buffer.from(pdfData);
     await docPage.close();
